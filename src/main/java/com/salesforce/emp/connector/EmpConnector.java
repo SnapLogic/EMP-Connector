@@ -1,7 +1,7 @@
-/* 
+/*
  * Copyright (c) 2016, salesforce.com, inc.
  * All rights reserved.
- * Licensed under the BSD 3-Clause license. 
+ * Licensed under the BSD 3-Clause license.
  * For full license text, see LICENSE.TXT file in the repo root  or https://opensource.org/licenses/BSD-3-Clause
  */
 package com.salesforce.emp.connector;
@@ -28,7 +28,7 @@ import org.slf4j.LoggerFactory;
 
 /**
  * @author hal.hildebrand
- * @since 202
+ * @since API v37.0
  */
 public class EmpConnector {
     private static final String ERROR = "error";
@@ -50,7 +50,7 @@ public class EmpConnector {
          */
         @Override
         public void cancel() {
-            replay.remove(topic);
+            replay.remove(topicWithoutQueryString(topic));
             if (running.get() && client != null) {
                 client.getChannel(topic).unsubscribe();
                 subscriptions.remove(this);
@@ -63,7 +63,7 @@ public class EmpConnector {
          */
         @Override
         public long getReplayFrom() {
-            return replay.getOrDefault(topic, REPLAY_FROM_EARLIEST);
+            return replay.getOrDefault(topicWithoutQueryString(topic), REPLAY_FROM_EARLIEST);
         }
 
         /*
@@ -189,8 +189,9 @@ public class EmpConnector {
             throw new IllegalStateException(String.format("Connector[%s} has not been started",
                     parameters.endpoint()));
         }
+        topic = topic.replaceAll("/$", "");
 
-        final String topicWithoutQueryString = topic.split("\\?")[0];
+        final String topicWithoutQueryString = topicWithoutQueryString(topic);
         if (replay.putIfAbsent(topicWithoutQueryString, replayFrom) != null) {
             throw new IllegalStateException(String.format("Already subscribed to %s [%s]",
                     topic, parameters.endpoint()));
@@ -248,6 +249,10 @@ public class EmpConnector {
 
     public long getLastReplayId(String topic) {
         return replay.get(topic);
+    }
+
+    private static String topicWithoutQueryString(String fullTopic) {
+        return fullTopic.split("\\?")[0];
     }
 
     private Future<Boolean> connect() {
