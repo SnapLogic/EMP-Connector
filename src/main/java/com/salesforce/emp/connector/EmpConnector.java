@@ -7,8 +7,6 @@
 package com.salesforce.emp.connector;
 
 import java.net.ConnectException;
-import java.util.Arrays;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.*;
@@ -104,7 +102,10 @@ public class EmpConnector {
     public static long REPLAY_FROM_TIP = -1L;
 
     private static String AUTHORIZATION = "Authorization";
-    private static final Logger log = LoggerFactory.getLogger(EmpConnector.class);
+
+    // Log messages to com.salesforce.* won't get logged to jcc.json or any other log file, regardless of level.
+    // But messages to com.snaplogic.* will be.  We could also fix this by modifying Tectonic's log4j2-jcc.xml config file.
+    private static final Logger log = LoggerFactory.getLogger("com.snaplogic.salesforce.emp.connector.EmpConnector");
 
     private volatile BayeuxClient client;
     private final HttpClient httpClient;
@@ -117,31 +118,6 @@ public class EmpConnector {
 
     private Function<Boolean, String> bearerTokenProvider;
     private AtomicBoolean reauthenticate = new AtomicBoolean(false);
-
-    private int maxRetry;
-    private int currentRetry;
-    private int retryInterval;
-    private Exception exception;
-
-    public Exception getException() {
-        return exception;
-    }
-
-    public void setException(final Exception exception) {
-        this.exception = exception;
-    }
-
-    public EmpConnector(BayeuxParameters parameters, int maxRetry, int retryInterval) {
-        this.parameters = parameters;
-        httpClient = new HttpClient(parameters.sslContextFactory());
-        httpClient.getProxyConfiguration().getProxies().addAll(parameters.proxies());
-        if (parameters.proxyAuth() != null){
-            httpClient.getAuthenticationStore().addAuthentication(parameters.proxyAuth());
-        }
-        this.maxRetry = maxRetry;
-        this.currentRetry = maxRetry;
-        this.retryInterval = retryInterval;
-    }
 
     public EmpConnector(BayeuxParameters parameters) {
         this.parameters = parameters;
@@ -158,8 +134,8 @@ public class EmpConnector {
      */
     public Future<Boolean> start() {
         if (running.compareAndSet(false, true)) {
-            addListener(Channel.META_CONNECT, new RetryAuthFailureListener());
-            addListener(Channel.META_HANDSHAKE, new RetryAuthFailureListener());
+            addListener(Channel.META_CONNECT, new AuthFailureListener());
+            addListener(Channel.META_HANDSHAKE, new AuthFailureListener());
             replay.clear();
             return connect();
         }
@@ -172,11 +148,9 @@ public class EmpConnector {
      * Stop the connector
      */
     public void stop() {
-        if (!running.compareAndSet(true, false)) {
-            return;
-        }
+        running.set(false);
         if (client != null) {
-            log.info("Disconnecting Bayeux Client in EmpConnector");
+            log.debug("Disconnecting Bayeux Client in EmpConnector");
             client.disconnect();
             client = null;
         }
@@ -184,7 +158,7 @@ public class EmpConnector {
             try {
                 httpClient.stop();
             } catch (Exception e) {
-                log.error("Unable to stop HTTP transport[{}]", parameters.endpoint(), e);
+                log.warn("Unable to stop HTTP transport[{}]", parameters.endpoint(), e);
             }
         }
     }
@@ -319,7 +293,7 @@ public class EmpConnector {
                 }
                 future.completeExceptionally(new ConnectException(
                         String.format("Cannot connect [%s] : %s", parameters.endpoint(), error)));
-                running.set(false);
+                stop();
             } else {
                 subscriptions.forEach(SubscriptionImpl::subscribe);
                 future.complete(true);
@@ -367,6 +341,7 @@ public class EmpConnector {
         public void onMessage(ClientSessionChannel channel, Message message) {
             if (!message.isSuccessful()) {
                 if (isError(message, ERROR_401) || isError(message, ERROR_403)) {
+                    log.debug("about to reauthenticate in response to message: {}", message);
                     reauthenticate.set(true);
                     stop();
                     reconnect();
@@ -410,75 +385,6 @@ public class EmpConnector {
 
         ClientSessionChannel.MessageListener getMessageListener() {
             return messageListener;
-        }
-    }
-
-
-    /**
-     * Listens to /meta/connect channel messages and handles 401 errors, where client needs
-     * to reauthenticate and adds retry and save the exception for reference.
-     */
-    private class RetryAuthFailureListener implements ClientSessionChannel.MessageListener {
-        private static final String ERROR_401 = "401";
-        private static final String ERROR_403 = "403";
-
-        @Override
-        public void onMessage(ClientSessionChannel channel, Message message) {
-            if (!message.isSuccessful()) {
-                saveException(message);
-                if (currentRetry > 0) {
-                    try {
-                        Thread.sleep(retryInterval);
-                    } catch (InterruptedException e) {
-                        e.printStackTrace();
-                        //NO-OP
-                    }
-                    currentRetry--;
-                    //Only re-authenticate if there is an authentication failure else just wait
-                    // for the specified interval and disconnect if elapsed
-                    if (isError(message, ERROR_401) || isError(message, ERROR_403)) {
-                        reauthenticate.set(true);
-                        stop();
-                        reconnect();
-                    }
-                } else {
-                    stop();
-                }
-            } else {
-                currentRetry = maxRetry;
-            }
-        }
-
-        private boolean isError(Message message, String errorCode) {
-            String error = (String) message.get(Message.ERROR_FIELD);
-            String failureReason = getFailureReason(message);
-
-            return (error != null && error.startsWith(errorCode)) ||
-                    (failureReason != null && failureReason.startsWith(errorCode));
-        }
-
-        private void saveException(Message message) {
-            if (!message.isSuccessful()) {
-                Object failure = message.get("failure");
-                if (failure instanceof Map) {
-                    Object currentException = ((Map) failure).get("exception");
-                    if (currentException instanceof Exception) {
-                        setException((Exception) currentException);
-                    }
-                }
-            }
-        }
-
-        private String getFailureReason(Message message) {
-            String failureReason = null;
-            Map<String, Object> ext = message.getExt();
-            if (ext != null) {
-                Map<String, Object> sfdc = (Map<String, Object>) ext.get("sfdc");
-                if (sfdc != null) {
-                    failureReason = (String) sfdc.get("failureReason");
-                }
-            }
-            return failureReason;
         }
     }
 }
