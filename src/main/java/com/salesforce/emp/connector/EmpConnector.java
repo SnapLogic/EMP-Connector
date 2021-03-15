@@ -106,7 +106,10 @@ public class EmpConnector {
     public static long REPLAY_FROM_TIP = -1L;
 
     private static String AUTHORIZATION = "Authorization";
-    private static final Logger log = LoggerFactory.getLogger(EmpConnector.class);
+
+    // Log messages to com.salesforce.* won't get logged to jcc.json or any other log file, regardless of level.
+    // But messages to com.snaplogic.* will be.  We could also fix this by modifying Tectonic's log4j2-jcc.xml config file.
+    private static final Logger log = LoggerFactory.getLogger("com.snaplogic.salesforce.emp.connector.EmpConnector");
 
     private volatile BayeuxClient client;
     private final HttpClient httpClient;
@@ -124,6 +127,9 @@ public class EmpConnector {
         this.parameters = parameters;
         httpClient = new HttpClient(parameters.sslContextFactory());
         httpClient.getProxyConfiguration().getProxies().addAll(parameters.proxies());
+        if (parameters.proxyAuth() != null){
+            httpClient.getAuthenticationStore().addAuthentication(parameters.proxyAuth());
+        }
     }
 
     /**
@@ -150,7 +156,7 @@ public class EmpConnector {
             return;
         }
         if (client != null) {
-            log.info("Disconnecting Bayeux Client in EmpConnector");
+            log.debug("Disconnecting Bayeux Client in EmpConnector");
             client.disconnect();
             client = null;
         }
@@ -166,7 +172,7 @@ public class EmpConnector {
                 log.info("Stopping the http client!");
                 httpClient.stop();
             } catch (Exception e) {
-                log.error("Unable to stop HTTP transport[{}]", parameters.endpoint(), e);
+                log.warn("Unable to stop HTTP transport[{}]", parameters.endpoint(), e);
             }
         }
     }
@@ -316,7 +322,7 @@ public class EmpConnector {
                 }
                 future.completeExceptionally(new ConnectException(
                         String.format("Cannot connect [%s] : %s", parameters.endpoint(), error)));
-                running.set(false);
+                stop();
             } else {
                 subscriptions.forEach(SubscriptionImpl::subscribe);
                 future.complete(true);
@@ -364,6 +370,7 @@ public class EmpConnector {
         public void onMessage(ClientSessionChannel channel, Message message) {
             if (!message.isSuccessful()) {
                 if (isError(message, ERROR_401) || isError(message, ERROR_403)) {
+                    log.debug("about to reauthenticate in response to message: {}", message);
                     reauthenticate.set(true);
                     disconnect();
                     reconnect();
