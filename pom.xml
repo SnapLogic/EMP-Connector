@@ -1,9 +1,9 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
-    <groupId>com.salesforce.conduit</groupId>
+    <groupId>com.snaplogic.salesforce.conduit</groupId>
     <artifactId>emp-connector</artifactId>
-    <version>0.0.2-sl</version>
+    <version>0.0.3.RELEASE</version>
     <name>EMP Connector</name>
     <description>A simplified connector for EMP</description>
     <url>https://github.com/forcedotcom/EMP-Connector</url>
@@ -68,7 +68,7 @@
         <dependency>
             <groupId>org.cometd.java</groupId>
             <artifactId>cometd-java-client</artifactId>
-            <version>3.1.4</version>
+            <version>4.0.9</version>
         </dependency>
         <dependency>
             <groupId>ch.qos.logback</groupId>

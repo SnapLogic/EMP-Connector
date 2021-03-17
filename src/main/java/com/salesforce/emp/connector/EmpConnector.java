@@ -6,14 +6,6 @@
  */
 package com.salesforce.emp.connector;
 
-import java.net.ConnectException;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Consumer;
-import java.util.function.Function;
-
 import org.cometd.bayeux.Channel;
 import org.cometd.bayeux.Message;
 import org.cometd.bayeux.client.ClientSessionChannel;
@@ -23,6 +15,18 @@ import org.eclipse.jetty.client.HttpClient;
 import org.eclipse.jetty.client.api.Request;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.net.ConnectException;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * @author hal.hildebrand
@@ -79,10 +83,10 @@ public class EmpConnector {
         }
 
         Future<TopicSubscription> subscribe() {
-            Long replayFrom = getReplayFrom();
+            long replayFrom = getReplayFrom();
             ClientSessionChannel channel = client.getChannel(topic);
             CompletableFuture<TopicSubscription> future = new CompletableFuture<>();
-            channel.subscribe((c, message) -> consumer.accept(message.getDataAsMap()), (c, message) -> {
+            channel.subscribe((c, message) -> consumer.accept(message.getDataAsMap()), (message) -> {
                 if (message.isSuccessful()) {
                     future.complete(this);
                 } else {
@@ -139,23 +143,33 @@ public class EmpConnector {
             replay.clear();
             return connect();
         }
-        CompletableFuture<Boolean> future = new CompletableFuture<Boolean>();
+        CompletableFuture<Boolean> future = new CompletableFuture<>();
         future.complete(true);
         return future;
+    }
+
+    /**
+     * Disconnecting Bayeux Client in Emp Connector
+     */
+    private void disconnect() {
+        if (!running.compareAndSet(true, false)) {
+            return;
+        }
+        if (client != null) {
+            log.debug("Disconnecting Bayeux Client in EmpConnector");
+            client.disconnect();
+            client = null;
+        }
     }
 
     /**
      * Stop the connector
      */
     public void stop() {
-        running.set(false);
-        if (client != null) {
-            log.debug("Disconnecting Bayeux Client in EmpConnector");
-            client.disconnect();
-            client = null;
-        }
+        disconnect();
         if (httpClient != null) {
             try {
+                log.info("Stopping the http client!");
                 httpClient.stop();
             } catch (Exception e) {
                 log.warn("Unable to stop HTTP transport[{}]", parameters.endpoint(), e);
@@ -202,6 +216,19 @@ public class EmpConnector {
         SubscriptionImpl subscription = new SubscriptionImpl(topic, consumer);
 
         return subscription.subscribe();
+    }
+
+    /**
+     * Unsubscribe to a topic subscription
+     *
+     * @param topic
+     *            - the topic subscribed
+     */
+    public void unsubscribe(String topic) {
+        subscriptions.stream()
+                .filter(subscription -> subscription.getTopic().equalsIgnoreCase(topic))
+                .findAny()
+                .ifPresent(SubscriptionImpl::cancel);
     }
 
     /**
@@ -262,7 +289,9 @@ public class EmpConnector {
         CompletableFuture<Boolean> future = new CompletableFuture<>();
 
         try {
-            httpClient.start();
+            if (!httpClient.isStarted()) {
+                httpClient.start();
+            }
         } catch (Exception e) {
             log.error("Unable to start HTTP transport[{}]", parameters.endpoint(), e);
             running.set(false);
@@ -285,7 +314,7 @@ public class EmpConnector {
 
         addListeners(client);
 
-        client.handshake((c, m) -> {
+        client.handshake((m) -> {
             if (!m.isSuccessful()) {
                 Object error = m.get(ERROR);
                 if (error == null) {
@@ -343,7 +372,7 @@ public class EmpConnector {
                 if (isError(message, ERROR_401) || isError(message, ERROR_403)) {
                     log.debug("about to reauthenticate in response to message: {}", message);
                     reauthenticate.set(true);
-                    stop();
+                    disconnect();
                     reconnect();
                 }
             }
